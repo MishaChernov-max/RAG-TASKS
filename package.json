@@ -4,23 +4,39 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build-index": "ts-node --project tsconfig.scripts.json scripts/build-index.ts",
+    "build": "npm run build-index && next build",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "next lint"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@lancedb/lancedb": "^0.23.0",
+    "gray-matter": "^4.0.3",
+    "lodash": "^4.17.21",
+    "markdown-to-txt": "^2.0.1",
     "next": "16.1.1",
     "react": "19.2.3",
-    "react-dom": "19.2.3"
+    "react-dom": "19.2.3",
+    "snowball-stemmers": "^0.6.0"
   },
   "devDependencies": {
+    "@jest/globals": "^30.2.0",
     "@tailwindcss/postcss": "^4",
+    "@types/jest": "^30.0.0",
+    "@types/lodash": "^4.17.23",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/snowball-stemmers": "^0.6.2",
     "eslint": "^9",
     "eslint-config-next": "16.1.1",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "ts-node": "^10.9.2",
+    "typescript": "^5",
+    "vite-tsconfig-paths": "^6.0.4",
+    "vitest": "^4.0.17"
   }
 }

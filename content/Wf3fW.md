@@ -1,157 +1,163 @@
----
+// tests/search-engine.test.ts
+
+// ... импорты
+
+const complexArticle = `---
 title: Логирование Gramax Enterprise Server
+
 ---
 
 {% table header="row" %}
 
 ---
 
-*  {% colwidth=[183] %}
+- {% colwidth=[183] %}
 
-   Переменная
+  Переменная
 
-*  {% colwidth=[311] %}
+- {% colwidth=[311] %}
 
-   Описание
+  Описание
 
-*  {% colwidth=[226] %}
+- {% colwidth=[226] %}
 
-   Пример значения
-
----
-
-*  {% colwidth=[183] %}
-
-   `LOG_TYPE`
-
-*  {% colwidth=[311] %}
-
-   Формат логов.
-
-   Варианты:
-
-   -  `default`
-
-   -  `cef`
-
-*  {% colwidth=[226] %}
-
-   По умолчанию: `default`
+  Пример значения
 
 ---
 
-*  {% colwidth=[183] %}
+- {% colwidth=[183] %}
 
-   `LOG_LEVEL`
+  \`LOG_TYPE\`
 
-*  {% colwidth=[311] %}
+- {% colwidth=[311] %}
 
-   Минимальный уровень логирования.
+  Формат логов.
 
-   Варианты:
+  Варианты:
 
-   -  `debug`
+  - \`default\`
 
-   -  `info`
+  - \`cef\`
 
-   -  `warn`
+- {% colwidth=[226] %}
 
-   -  `error`
-
-   -  `fatal`
-
-*  {% colwidth=[226] %}
-
-   По умолчанию: `info`
+  По умолчанию: \`default\`
 
 ---
 
-*  {% colwidth=[183] %}
+- {% colwidth=[183] %}
 
-   `LOG_TRANSPORTER`
+  \`LOG_LEVEL\`
 
-*  {% colwidth=[311] %}
+- {% colwidth=[311] %}
 
-   Канал вывода логов.
+  Минимальный уровень логирования.
 
-   Варианты:
+  Варианты:
 
-   -  `console`
+  - \`debug\`
 
-   -  `syslog`
+  - \`info\`
 
-*  {% colwidth=[226] %}
+  - \`warn\`
 
-   По умолчанию: `console`
+  - \`error\`
 
----
+  - \`fatal\`
 
-*  {% colwidth=[183] %}
+- {% colwidth=[226] %}
 
-   `LOG_SYSLOG_HOST`
-
-*  {% colwidth=[311] %}
-
-   Хост Syslog-сервера.
-
-*  {% colwidth=[226] %}
-
-   По умолчанию: `127.0.0.1`
+  По умолчанию: \`info\`
 
 ---
 
-*  {% colwidth=[183] %}
+- {% colwidth=[183] %}
 
-   `LOG_SYSLOG_PORT`
+  \`LOG_TRANSPORTER\`
 
-*  {% colwidth=[311] %}
+- {% colwidth=[311] %}
 
-   Порт Syslog-сервера.
+  Канал вывода логов.
 
-*  {% colwidth=[226] %}
+  Варианты:
 
-   По умолчанию: `514`
+  - \`console\`
 
----
+  - \`syslog\`
 
-*  {% colwidth=[183] %}
+- {% colwidth=[226] %}
 
-   `LOG_SYSLOG_PROTOCOL`
+  По умолчанию: \`console\`
 
-*  {% colwidth=[311] %}
+{% /table %}`;
 
-   Протокол соединения с Syslog (поддерживаются IPv4/IPv6 и TLS).
+describe('Сложный кейс: Таблицы Markdoc (Логирование)', () => {
+let searchEngine: BM25Search;
 
-   Варианты:
+beforeEach(() => {
+searchEngine = new BM25Search([complexArticle]);
+});
 
-   -  `udp4`
+it('должен вычищать ВСЕ теги таблицы и ширины колонок', () => {
+const raw = complexArticle.split('---').slice(2).join('---'); // берем контент без frontmatter
+const cleaned = searchEngine.getCleanText(raw);
 
-   -  `tcp4`
+    // Проверяем, что служебные цифры и теги исчезли
+    expect(cleaned).not.toContain('colwidth');
+    expect(cleaned).not.toContain('183');
+    expect(cleaned).not.toContain('311');
+    expect(cleaned).not.toContain('{%');
+    expect(cleaned).not.toContain('%}');
 
-   -  `tls4`
+    // Проверяем, что полезный текст остался
+    expect(cleaned).toContain('LOG_LEVEL');
+    expect(cleaned).toContain('Минимальный уровень логирования');
+    expect(cleaned).toContain('fatal');
 
-   -  `udp6`
+});
 
-   -  `tcp6`
+it('должен находить статью по переменной окружения', () => {
+// Ищем конкретную переменную из таблицы
+const results = searchEngine.search('LOG_TRANSPORTER', 'strict');
 
-   -  `tls6`
+    expect(results.length).toBe(1);
+    expect(results[0].title).toBe('Логирование Gramax Enterprise Server');
 
-*  {% colwidth=[226] %}
+});
 
-   По умолчанию: `udp4`
+it('должен находить значения внутри списка вариантов', () => {
+// Ищем слово "syslog", которое является одним из вариантов значения
+const results = searchEngine.search('syslog', 'loose');
 
----
+    expect(results.length).toBe(1);
 
-*  {% colwidth=[183] %}
+});
 
-   `LOG_SYSLOG_APP_NAME`
+it('не должен находить статью по техническим атрибутам Markdoc', () => {
+// Если мы ищем "row" (из header="row") или цифру ширины колонки,
+// поиск должен быть пуст. Это значит, что мусор не проиндексирован.
+const results1 = searchEngine.search('colwidth', 'loose');
+const results2 = searchEngine.search('183', 'loose');
 
-*  {% colwidth=[311] %}
+    expect(results1.length).toBe(0);
+    expect(results2.length).toBe(0);
 
-   Имя приложения, отображаемое в сообщениях Syslog.
+});
 
-*  {% colwidth=[226] %}
+it('должен генерировать красивый сниппет без мусора', () => {
+// Эмулируем поиск по уровню логов
+const results = searchEngine.search('LOG_LEVEL', 'loose');
+const snippet = results[0].snippet;
 
-   По умолчанию: `gramax`
+    // Сниппет должен выглядеть примерно так: "... LOG_LEVEL Минимальный уровень логирования ..."
+    // А НЕ так: "... colwidth LOG_LEVEL colwidth Минимальный ..."
 
-{% /table %}
+    console.log('Сгенерированный сниппет:', snippet); // Полезно глянуть в консоли при отладке
+
+    expect(snippet).toContain('LOG_LEVEL');
+    expect(snippet).toContain('Минимальный уровень');
+    expect(snippet).not.toContain('colwidth');
+    expect(snippet).not.toContain('{%');
+
+});
+});
