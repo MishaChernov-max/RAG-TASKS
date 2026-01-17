@@ -1,3 +1,5 @@
+import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
+import { Document } from "@langchain/core/documents";
 import markdownToTxt from "markdown-to-txt";
 import { MdFiles } from "./loader";
 import matter from "gray-matter";
@@ -9,19 +11,20 @@ import {
 type Metadata = {
   source: string;
   title: string;
-  chunkIndex: number;
-};
-
-interface Chunk {
-  text: string;
-  metadata: Metadata;
+  chunkIndex?: number;
   vector?: number[];
-}
+};
 
 export class VectorEngine {
   // 1. ОБЯЗАТЕЛЬНО объявляем свойства класса
   private extractor: FeatureExtractionPipeline | null = null;
-  public allChunks: Chunk[] = [];
+  public allChunks: Document<Metadata>[] = [];
+  private splitter = new RecursiveCharacterTextSplitter({
+    chunkSize: 500,
+    chunkOverlap: 100,
+    separators: ["\n\n", "\n", ". ", "! ", "? ", " ", ""],
+  });
+  private embeddingSize = 384;
 
   constructor() {}
 
@@ -30,83 +33,42 @@ export class VectorEngine {
     if (!this.extractor) {
       const pipe = await pipeline(
         "feature-extraction",
-        "Xenova/multilingual-e5-small"
+        "Xenova/multilingual-e5-small",
       );
 
-      this.extractor = pipe as FeatureExtractionPipeline;
+      this.extractor = pipe;
     }
     return this.extractor;
   }
 
-  private chanking(text: string, filePath: string, title: string) {
-    const chunks: Chunk[] = [];
-    let chunk: string[] = [];
-    const LIMIT = 200;
-    const OVERLAP = 40;
-
-    const array = text.split(/\s+/);
-
-    for (let index = 0; index < array.length; index++) {
-      const word = array[index];
-      if (chunk.length >= LIMIT) {
-        const start = chunk.length - OVERLAP;
-        const endOfChunk = chunk.slice(start, chunk.length);
-
-        chunks.push({
-          text: chunk.join(" "),
-          metadata: {
-            source: filePath,
-            title,
-            chunkIndex: chunks.length, // ИСПРАВЛЕНО: Индекс куска, а не файла
-          },
-        });
-
-        chunk = [...endOfChunk, word];
-      } else {
-        chunk.push(word);
-      }
-    }
-
-    if (chunk.length > 0) {
-      chunks.push({
-        text: chunk.join(" "),
-        metadata: {
-          source: filePath,
-          title,
-          chunkIndex: chunks.length,
-        },
-      });
-    }
-    return chunks;
+  private async chunking(fullText: string, metadata: Metadata[]) {
+    return await this.splitter.createDocuments([fullText], metadata);
   }
 
   async buildVectorIndex(rawdata: MdFiles[]) {
-    const extractor = await this.getExtractor();
-
     this.allChunks = [];
-
+    const extractor = await this.getExtractor();
     for (const { filePath, fileContent } of rawdata) {
       const { data, content } = matter(fileContent);
-
-      const docTitle = (data.title as string) || "Без названия";
       const cleanText = this.getCleanText(content);
-
-      const fullText = `${docTitle}. ${cleanText}`;
-
-      const fileChunks = this.chanking(fullText, filePath, docTitle);
-
-      for (const chunk of fileChunks) {
-        const output = await extractor(chunk.text, {
-          pooling: "mean",
-          normalize: true,
-        });
-
-        chunk.vector = Array.from(output.data) as number[];
-
-        this.allChunks.push(chunk);
+      const fullText = `${data.title || "Untitled"}. ${cleanText}`;
+      const metaData = { source: filePath, title: data.title };
+      const chunks = await this.chunking(fullText, [metaData]);
+      const chunkTexts = chunks.map((chunk) => chunk.pageContent);
+      const output = await extractor(chunkTexts, {
+        pooling: "mean",
+        normalize: true,
+      });
+      for (let index = 0; index < chunks.length; index++) {
+        const element = chunks[index];
+        const start = index * this.embeddingSize;
+        const end = start + this.embeddingSize;
+        const vector = output.data.slice(start, end);
+        element.metadata.vector = Array.from(vector);
+        element.metadata.chunkIndex = index;
+        this.allChunks.push(element as Document<Metadata>);
       }
     }
-
     return this.allChunks;
   }
 

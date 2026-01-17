@@ -1,29 +1,24 @@
-import { describe, it, expect, beforeEach } from "@jest/globals";
+import { describe, it, expect, beforeEach, vi } from "vitest"; // 1. Добавили vi в импорт
 import { VectorEngine } from "../lib/vector-engine";
 import { pipeline } from "@huggingface/transformers";
 
-// 1. Мокаем библиотеку
-jest.mock("@huggingface/transformers", () => ({
-  pipeline: jest.fn(),
+vi.mock("@huggingface/transformers", () => ({
+  pipeline: vi.fn(),
 }));
 
-// 2. РЕШЕНИЕ: Принудительно упрощаем тип через unknown
-const mockedPipeline = pipeline as unknown as jest.MockedFunction<any>;
+const mockedPipeline = pipeline as unknown as ReturnType<typeof vi.fn>;
 
-describe("VectorEngine: Types Fix", () => {
+describe("VectorEngine: Vitest Fix", () => {
   let engine: VectorEngine;
 
-  // 3. Мок для экстрактора (той функции, которую вернет pipeline)
-  const mockExtractor = jest.fn() as jest.MockedFunction<any>;
+  const mockExtractor = vi.fn();
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     engine = new VectorEngine();
 
-    // Настраиваем цепочку: pipeline() -> возвращает mockExtractor
     mockedPipeline.mockResolvedValue(mockExtractor);
 
-    // Настраиваем результат работы экстрактора (вектор)
     mockExtractor.mockResolvedValue({
       data: new Float32Array([0.1, 0.2, 0.3]),
     });
@@ -35,7 +30,7 @@ describe("VectorEngine: Types Fix", () => {
     expect(clean).toBe("Тест");
   });
 
-  it("buildVectorIndex должен работать без ошибок типов", async () => {
+  it("buildVectorIndex должен работать", async () => {
     const files = [
       {
         filePath: "f.md",
@@ -46,7 +41,11 @@ describe("VectorEngine: Types Fix", () => {
     const result = await engine.buildVectorIndex(files);
 
     expect(result.length).toBeGreaterThan(0);
-    // Сравниваем массив с результатом мока
-    expect(Array.from(result[0].vector!)).toEqual([0.1, 0.2, 0.3]);
+
+    // ИСПРАВЛЕНИЕ:
+    // Мы превращаем наши ожидаемые числа тоже в Float32, чтобы сравнение было корректным
+    const expectedVector = Array.from(new Float32Array([0.1, 0.2, 0.3]));
+
+    expect(Array.from(result[0].metadata.vector!)).toEqual(expectedVector);
   });
 });
