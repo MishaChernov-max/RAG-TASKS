@@ -1,4 +1,4 @@
-// vitest.config.ts
+// vitest.config.mjs
 import { defineConfig } from "vitest/config";
 import tsconfigPaths from "vite-tsconfig-paths";
 

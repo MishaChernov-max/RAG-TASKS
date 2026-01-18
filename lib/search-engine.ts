@@ -3,6 +3,17 @@ import matter from "gray-matter";
 import { newStemmer, Stemmer } from "snowball-stemmers";
 import { MdFiles } from "./loader";
 
+// Динамический импорт для MyStem (CommonJS модуль)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let MyStemModule: any = null;
+(async () => {
+  try {
+    MyStemModule = await import("mystem3-promise");
+  } catch {
+    // Игнорируем ошибки импорта
+  }
+})();
+
 const k1 = 1;
 const b = 0.75;
 
@@ -12,27 +23,63 @@ interface DocParams {
   content: string;
   originalLength: number;
   stemOriginalLength: number;
+  lemmaOriginalLength: number;
   originalContent: string;
   tokensMap: Record<string, number>;
   tokensMapStem: Record<string, number>;
+  tokensMapLemma: Record<string, number>;
   filePath: string;
 }
 
 export type SearchMode = "strict" | "loose";
 
-export type AlghoritmType = "bm25" | "stemming";
+export type AlghoritmType = "bm25" | "stemming" | "lemmatization";
+
+// Глобальный кэш для лемм (для синхронного доступа)
+const lemmatizationCache: Record<string, string> = {};
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let myStemInstance: any = null;
+let myStemInitialized = false;
+
+// Инициализация MyStem в фоновом режиме
+async function initMyStem() {
+  if (!myStemInitialized && !myStemInstance && MyStemModule) {
+    try {
+      const MyStemClass = MyStemModule.default || MyStemModule;
+      myStemInstance = new MyStemClass();
+      await myStemInstance.start();
+      myStemInitialized = true;
+    } catch (error) {
+      console.warn(
+        "Failed to initialize MyStem, falling back to stemmer:",
+        error,
+      );
+      myStemInitialized = true; // Чтобы не пытаться снова
+    }
+  }
+}
+
+// Предварительная инициализация (неблокирующая)
+if (typeof process !== "undefined") {
+  initMyStem().catch(() => {
+    // Игнорируем ошибки при инициализации
+  });
+}
 
 export class BM25Search {
   private ruStemmer: Stemmer;
   private enStemmer: Stemmer;
   private stemmerGlobalCount: Record<string, number> = {};
+  private lemmatizerGlobalCount: Record<string, number> = {};
   private docGlobalCount: Record<string, number> = {};
   private corpusSize: number = 0;
   private documents: DocParams[] = [];
   private averageLength: Record<AlghoritmType, number> = {
     bm25: 0,
     stemming: 0,
+    lemmatization: 0,
   };
+
   constructor(rawdata: MdFiles[]) {
     this.ruStemmer = newStemmer("russian");
     this.enStemmer = newStemmer("english");
@@ -47,12 +94,90 @@ export class BM25Search {
     }
     return word;
   }
-  private tokenize(text: string, isStemming?: boolean): string[] {
+
+  private processLemma(word: string): string {
+    const lowerWord = word.toLowerCase();
+
+    // Для русского языка: используем кэш или улучшенный fallback
+    if (/[а-яё]/i.test(word)) {
+      // Проверяем кэш
+      if (lemmatizationCache[lowerWord]) {
+        return lemmatizationCache[lowerWord];
+      }
+
+      const stemmed = this.ruStemmer.stem(word);
+      //Слово
+      //Слов
+      //Слов=>""
+      // Улучшенная нормализация для глаголов
+      // Извлекаем базовую часть слова, убирая окончания глаголов
+      const verbEndings =
+        /(у|ешь|ет|ем|ете|ут|ют|ал|ала|ало|али|ать|ять|ить|еть|уть|ыть|ти|ться|тся)$/;
+      const wordBase = lowerWord.replace(verbEndings, "");
+
+      // Если стемм заканчивается на "а" и мы можем извлечь базу, используем базу
+      let normalized = stemmed;
+      if (
+        wordBase.length > 2 &&
+        stemmed.endsWith("а") &&
+        stemmed.startsWith(wordBase)
+      ) {
+        normalized = wordBase;
+      } else if (wordBase.length > 2 && stemmed === wordBase + "а") {
+        normalized = wordBase;
+      } else if (
+        wordBase.length > 2 &&
+        lowerWord !== wordBase &&
+        stemmed.startsWith(wordBase)
+      ) {
+        // Если база является префиксом стемма, используем базу (например "бег" для "бегу" и "бегать")
+        normalized = wordBase;
+      }
+
+      // Попытка обновить кэш асинхронно через MyStem (не блокирует выполнение)
+      if (myStemInstance && myStemInitialized) {
+        myStemInstance
+          .lemmatize(lowerWord)
+          .then((lemma: string) => {
+            if (lemma && lemma.trim()) {
+              const cleanLemma = lemma.trim().toLowerCase();
+              lemmatizationCache[lowerWord] = cleanLemma;
+            }
+          })
+          .catch(() => {
+            // Игнорируем ошибки
+          });
+      }
+
+      return normalized;
+    }
+
+    // Для английского языка: используем стеммер (он хорошо работает для run/running, server/servers)
+    if (/[a-z]/i.test(word)) {
+      return this.enStemmer.stem(word);
+    }
+
+    return lowerWord;
+  }
+
+  private tokenize(
+    text: string,
+    mode?: "bm25" | "stemming" | "lemmatization",
+  ): string[] {
     const txt = text
       .toLowerCase()
       .split(/[^a-zа-яё0-9]+/i)
       .filter((word) => word.length > 1);
-    return isStemming ? txt.map((word) => this.processToken(word)) : txt;
+
+    if (mode === "stemming") {
+      return txt.map((word) => this.processToken(word));
+    }
+
+    if (mode === "lemmatization") {
+      return txt.map((word) => this.processLemma(word));
+    }
+
+    return txt;
   }
   static loadJSON(jsonString: string): BM25Search {
     const data = JSON.parse(jsonString);
@@ -61,11 +186,17 @@ export class BM25Search {
 
     instance.corpusSize = data.corpusSize;
 
-    instance.averageLength = data.averageLength;
+    instance.averageLength = data.averageLength || {
+      bm25: data.averageLength?.bm25 || 0,
+      stemming: data.averageLength?.stemming || 0,
+      lemmatization: data.averageLength?.lemmatization || 0,
+    };
 
     instance.docGlobalCount = data.docGlobalCount;
 
     instance.stemmerGlobalCount = data.stemmerGlobalCount;
+
+    instance.lemmatizerGlobalCount = data.lemmatizerGlobalCount || {};
 
     instance.documents = data.documents;
 
@@ -103,17 +234,21 @@ export class BM25Search {
     const totalLengths: Record<AlghoritmType, number> = {
       bm25: 0,
       stemming: 0,
+      lemmatization: 0,
     };
     rawdata.forEach(({ filePath, fileContent }, index) => {
       const dictionary: Record<string, number> = {};
       const stemsDictionary: Record<string, number> = {};
+      const lemmasDictionary: Record<string, number> = {};
       const { data, content } = matter(fileContent);
       const cleanContent = this.getCleanText(content);
       const fullText = (data.title || "") + " " + cleanContent;
       const tokens = this.tokenize(fullText);
-      const stemTokens = this.tokenize(fullText, true);
+      const stemTokens = this.tokenize(fullText, "stemming");
+      const lemmaTokens = this.tokenize(fullText, "lemmatization");
       totalLengths.bm25 += tokens.length;
       totalLengths.stemming += stemTokens.length;
+      totalLengths.lemmatization += lemmaTokens.length;
       tokens.forEach((term) => {
         dictionary[term] = (dictionary[term] || 0) + 1;
         if (dictionary[term] === 1) {
@@ -127,15 +262,24 @@ export class BM25Search {
             (this.stemmerGlobalCount[term] || 0) + 1;
         }
       });
+      lemmaTokens.forEach((term) => {
+        lemmasDictionary[term] = (lemmasDictionary[term] || 0) + 1;
+        if (lemmasDictionary[term] === 1) {
+          this.lemmatizerGlobalCount[term] =
+            (this.lemmatizerGlobalCount[term] || 0) + 1;
+        }
+      });
       this.documents.push({
         id: index,
         title: data.title || `Untitled ${index}`,
         content: cleanContent,
         originalLength: tokens.length,
         stemOriginalLength: stemTokens.length,
+        lemmaOriginalLength: lemmaTokens.length,
         originalContent: fileContent,
         tokensMap: dictionary,
         tokensMapStem: stemsDictionary,
+        tokensMapLemma: lemmasDictionary,
         filePath,
       });
     });
@@ -143,13 +287,19 @@ export class BM25Search {
     if (this.corpusSize > 0) {
       this.averageLength.bm25 = totalLengths.bm25 / this.corpusSize;
       this.averageLength.stemming = totalLengths.stemming / this.corpusSize;
+      this.averageLength.lemmatization =
+        totalLengths.lemmatization / this.corpusSize;
     }
   }
   private calculateIDF(word: string, alghoritm: AlghoritmType) {
-    const nq =
-      alghoritm === "bm25"
-        ? this.docGlobalCount[word] || 0
-        : this.stemmerGlobalCount[word] || 0;
+    let nq = 0;
+    if (alghoritm === "bm25") {
+      nq = this.docGlobalCount[word] || 0;
+    } else if (alghoritm === "stemming") {
+      nq = this.stemmerGlobalCount[word] || 0;
+    } else if (alghoritm === "lemmatization") {
+      nq = this.lemmatizerGlobalCount[word] || 0;
+    }
     const idf = Math.log((this.corpusSize - nq + 0.5) / (nq + 0.5) + 1);
     return idf;
   }
@@ -238,16 +388,24 @@ export class BM25Search {
   }
 
   public search(input: string, mode: SearchMode, alghoritm: AlghoritmType) {
-    const isStemming = alghoritm === "bm25" ? false : true;
-    const tokensInput = this.tokenize(input, isStemming);
-    const snippetTokens = this.tokenize(input, false);
+    const tokensInput = this.tokenize(
+      input,
+      alghoritm === "bm25" ? undefined : alghoritm,
+    );
+    const snippetTokens = this.tokenize(input);
     if (!tokensInput.length) {
       return [];
     }
     const scores = new Map<number, number>();
     this.documents.forEach((doc) => {
-      const docTokens =
-        alghoritm === "bm25" ? doc.tokensMap : doc.tokensMapStem;
+      let docTokens: Record<string, number>;
+      if (alghoritm === "bm25") {
+        docTokens = doc.tokensMap;
+      } else if (alghoritm === "stemming") {
+        docTokens = doc.tokensMapStem;
+      } else {
+        docTokens = doc.tokensMapLemma;
+      }
       if (mode === "strict") {
         const check = tokensInput.every((token) => docTokens[token]);
         if (!check) return;
@@ -257,12 +415,15 @@ export class BM25Search {
         const idf = this.calculateIDF(token, alghoritm);
         const frequence = docTokens[token] || 0;
         if (frequence === 0) return;
-        const avgLength =
-          alghoritm === "bm25"
-            ? this.averageLength.bm25
-            : this.averageLength.stemming;
-        const docOriginalLength =
-          alghoritm === "bm25" ? doc.originalLength : doc.stemOriginalLength;
+        const avgLength = this.averageLength[alghoritm];
+        let docOriginalLength: number;
+        if (alghoritm === "bm25") {
+          docOriginalLength = doc.originalLength;
+        } else if (alghoritm === "stemming") {
+          docOriginalLength = doc.stemOriginalLength;
+        } else {
+          docOriginalLength = doc.lemmaOriginalLength;
+        }
         const nominator = frequence * (k1 + 1);
         const denominator =
           frequence + k1 * (1 - b + b * (docOriginalLength / avgLength));

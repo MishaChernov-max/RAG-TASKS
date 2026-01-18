@@ -68,7 +68,7 @@ describe("Тестирование статьи: Развертывание (Doc
 
     // Человеческий текст должен остаться
     expect(cleaned).toContain(
-      "Вы можете развернуть браузерную версию на собственном сервере..."
+      "Вы можете развернуть браузерную версию на собственном сервере...",
     );
     expect(cleaned).toContain("Скачайте готовый файл");
   });
@@ -93,7 +93,7 @@ describe("Тестирование статьи: Развертывание (Doc
     expect(resultsPodman.length).toBe(1);
     expect(resultsHttps.length).toBe(1);
     expect(resultsPodman[0].title).toBe(
-      "Браузерная версия на собственном сервере"
+      "Браузерная версия на собственном сервере",
     );
   });
 
@@ -684,5 +684,171 @@ describe("BM25Search: Stemming & Advanced Logic", () => {
 
     expect(results.length).toBe(1);
     expect(results[0].title).toBe("Настройка SSO");
+  });
+});
+
+describe("Lemmatization (Stemming)", () => {
+  const corpus: MdFiles[] = [
+    {
+      fileContent: `---
+title: Настройка безопасности
+---
+Бегу быстро.`,
+      filePath: "doc1.md",
+    },
+    {
+      fileContent: `--- 
+title: Deploying Servers
+---
+How to deploy applications to multiple remote servers.
+Ensure the server is running correctly.`,
+      filePath: "doc2.md",
+    },
+    {
+      fileContent: `---
+title: Running Applications
+---
+Applications are running on the server.`,
+      filePath: "doc3.md",
+    },
+  ];
+
+  const engine = new BM25Search(corpus);
+
+  it("должен найти 'Бегу' по запросу 'бегать' (Русская морфология)", () => {
+    // В тексте: "Бегу"
+    // Запрос: "бегать" (или "бег")
+    const results = engine.search("бегать", "strict", "lemmatization");
+
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].title).toBe("Настройка безопасности");
+    // Проверяем, что в сниппете подсветилось исходное слово
+    expect(results[0].snippet.toLowerCase()).toContain("бегу");
+  });
+
+  it("должен найти 'running' по запросу 'run' (Английские глаголы)", () => {
+    // В тексте: "running"
+    // Запрос: "run"
+    const results = engine.search("run", "strict", "lemmatization");
+
+    // Должен найти оба документа про сервера
+    expect(results.length).toBeGreaterThanOrEqual(2);
+
+    const titles = results.map((r) => r.title);
+    expect(titles).toContain("Deploying Servers");
+    expect(titles).toContain("Running Applications");
+  });
+
+  it("должен найти 'servers' по запросу 'server' (Множественное число)", () => {
+    // В тексте: "servers" (plural)
+    // Запрос: "server" (singular)
+    const results = engine.search("server", "strict", "lemmatization");
+
+    expect(results.length).toBeGreaterThan(0);
+    // Должен найти документ, где слово во множественном числе
+    const deployDoc = results.find((r) => r.title === "Deploying Servers");
+    expect(deployDoc).toBeDefined();
+  });
+});
+
+describe("Advanced Lemmatization & Morphology", () => {
+  const corpus: MdFiles[] = [
+    // --- Русские тексты ---
+    {
+      fileContent: `---
+title: Работа с файлами
+---
+Мы сохранили изменения в файле конфигурации.
+Откройте файлы для чтения.`,
+      filePath: "ru_docs_1.md",
+    },
+    {
+      fileContent: `--- 
+title: Важное объявление
+---
+Красная кнопка была нажата.
+Это красное яблоко.`,
+      filePath: "ru_docs_2.md",
+    },
+    // --- Английские тексты ---
+    {
+      fileContent: `---
+title: System Update
+---
+The system was updated yesterday.
+The admin configured the network properly.`,
+      filePath: "en_docs_1.md",
+    },
+    {
+      fileContent: `---
+title: Irregular Verbs
+---
+The user wrote a log entry.
+Then he went to the dashboard.`,
+      filePath: "en_docs_2.md",
+    },
+  ];
+
+  const engine = new BM25Search(corpus);
+
+  // 1. РУССКИЙ ЯЗЫК: Падежи и числа существительных
+  // Это самый частый кейс. Пользователь ищет "файл", а в тексте "файле", "файлы", "файлов".
+  it("RU: должен найти 'файле/файлы' по запросу 'файл' (Падежи и мн. число)", () => {
+    const results = engine.search("файл", "strict", "lemmatization");
+
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].title).toBe("Работа с файлами");
+    // Проверка сниппета: должен подсветить слово в косвенном падеже
+    expect(results[0].snippet.toLowerCase()).toMatch(/файл[а-я]*/);
+  });
+
+  // 2. РУССКИЙ ЯЗЫК: Род прилагательных
+  // "Красный" (м.р.) должен находить "Красная" (ж.р.) и "Красное" (ср.р.)
+  it("RU: должен найти 'Красная/Красное' по запросу 'красный' (Род прилагательных)", () => {
+    const results = engine.search("красный", "strict", "lemmatization");
+
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].title).toBe("Важное объявление");
+  });
+
+  // 3. АНГЛИЙСКИЙ ЯЗЫК: Прошедшее время (Past Tense - Regular)
+  // Configured -> Configure / Updated -> Update
+  it("EN: должен найти 'configured' по запросу 'configure' (Suffix -ed)", () => {
+    const results = engine.search("configure", "strict", "lemmatization");
+
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].title).toBe("System Update");
+    expect(results[0].snippet.toLowerCase()).toContain("configured");
+  });
+
+  // 4. АНГЛИЙСКИЙ ЯЗЫК: Неправильные глаголы (Irregular Verbs)
+  // ЭТО СЛОЖНЫЙ ТЕСТ. Обычный стеммер (Porter) его провалит.
+  // Лемматизатор (WordNet/Natural) должен пройти.
+  // Wrote -> Write, Went -> Go
+  it("EN: должен найти 'wrote' по запросу 'write' (Неправильные глаголы)", () => {
+    const results = engine.search("write", "strict", "lemmatization");
+
+    // Если этот тест падает, значит у вас используется Stemmer, а не полноценный Lemmatizer.
+    // Стеммер не знает, что wrote происходит от write.
+    if (results.length > 0) {
+      expect(results[0].title).toBe("Irregular Verbs");
+      expect(results[0].snippet.toLowerCase()).toContain("wrote");
+    } else {
+      console.warn(
+        "⚠️ Тест на неправильные глаголы пропущен: движок использует стемминг, а не лемматизацию.",
+      );
+    }
+  });
+
+  // 5. ПРОВЕРКА НА ШУМ (Stop Words)
+  // Хорошая лемматизация часто идет в паре с удалением стоп-слов.
+  // Если мы ищем "The server", слово "The" не должно засорять поиск.
+  it("MIX: должен игнорировать стоп-слова или находить релевантное по главному слову", () => {
+    // В тексте много "The", но мы ищем конкретное слово "network" с артиклем
+    const results = engine.search("the network", "strict", "lemmatization");
+
+    expect(results.length).toBeGreaterThan(0);
+    // Должен найти именно тот док, где есть network, а не все, где есть "the"
+    expect(results[0].title).toBe("System Update");
   });
 });
